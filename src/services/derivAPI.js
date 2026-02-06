@@ -3,31 +3,48 @@ import DerivAPI from '@deriv/deriv-api';
 class DerivAPIService {
   constructor(appId) {
     this.appId = appId;
-    this.api = null;
-    this.connection = null;
+    this.ws = null;
     this.accountInfo = null;
+    this.messageHandlers = new Map();
+    this.requestId = 0;
   }
 
   async connect() {
     try {
-      this.connection = new WebSocket(
+      this.ws = new WebSocket(
         `wss://ws.derivws.com/websockets/v3?app_id=${this.appId}`
       );
       
-      this.api = new DerivAPI({ connection: this.connection });
-      
       return new Promise((resolve, reject) => {
-        this.connection.onopen = () => {
+        this.ws.onopen = () => {
           console.log('✅ Connected to Deriv WebSocket');
+          
+          // Set up message handler
+          this.ws.onmessage = (msg) => {
+            const response = JSON.parse(msg.data);
+            console.log('📥 Received:', response);
+            
+            // Handle subscriptions and responses
+            if (response.req_id && this.messageHandlers.has(response.req_id)) {
+              const handler = this.messageHandlers.get(response.req_id);
+              handler(response);
+              
+              // Remove one-time handlers (not subscriptions)
+              if (response.msg_type !== 'balance') {
+                this.messageHandlers.delete(response.req_id);
+              }
+            }
+          };
+          
           resolve({ success: true, data: true });
         };
         
-        this.connection.onerror = (error) => {
+        this.ws.onerror = (error) => {
           console.error('❌ WebSocket error:', error);
-          reject({ success: false, message: error.message });
+          reject({ success: false, message: 'WebSocket connection failed' });
         };
         
-        this.connection.onclose = () => {
+        this.ws.onclose = () => {
           console.log('🔌 WebSocket closed');
         };
       });
@@ -37,29 +54,65 @@ class DerivAPIService {
     }
   }
 
+  async sendRequest(request) {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket not connected'));
+        return;
+      }
+
+      const req_id = ++this.requestId;
+      const requestWithId = { ...request, req_id };
+
+      this.messageHandlers.set(req_id, (response) => {
+        if (response.error) {
+          reject(response.error);
+        } else {
+          resolve(response);
+        }
+      });
+
+      console.log('📤 Sending:', requestWithId);
+      this.ws.send(JSON.stringify(requestWithId));
+    });
+  }
+
   async authorize(token) {
     try {
-      const response = await this.api.authorize({ authorize: token });
+      console.log('🔑 Authorizing with token...');
+      
+      const response = await this.sendRequest({ authorize: token });
+      
+      if (!response.authorize) {
+        return { 
+          success: false, 
+          message: 'No authorization data in response' 
+        };
+      }
       
       this.accountInfo = {
         loginid: response.authorize.loginid,
         currency: response.authorize.currency,
         balance: response.authorize.balance,
         email: response.authorize.email,
-        country: response.authorize.country
+        country: response.authorize.country || 'Unknown'
       };
       
       console.log('✅ Authorized:', this.accountInfo.loginid);
       return { success: true, data: this.accountInfo };
+      
     } catch (error) {
-      console.error('Authorization failed:', error);
-      return { success: false, message: 'Invalid API token' };
+      console.error('❌ Authorization failed:', error);
+      return { 
+        success: false, 
+        message: error.message || 'Invalid API token' 
+      };
     }
   }
 
   async getBalance() {
     try {
-      const response = await this.api.balance();
+      const response = await this.sendRequest({ balance: 1 });
       return {
         success: true,
         data: {
@@ -75,7 +128,7 @@ class DerivAPIService {
 
   async getOpenPositions() {
     try {
-      const response = await this.api.portfolio({ portfolio: 1 });
+      const response = await this.sendRequest({ portfolio: 1 });
       
       if (!response.portfolio || !response.portfolio.contracts) {
         return { success: true, data: [] };
@@ -111,7 +164,7 @@ class DerivAPIService {
 
   async getTradeHistory(limit = 20) {
     try {
-      const response = await this.api.profitTable({ 
+      const response = await this.sendRequest({ 
         profit_table: 1, 
         description: 1, 
         limit: limit,
@@ -153,7 +206,7 @@ class DerivAPIService {
 
   async getBotActivity() {
     try {
-      const response = await this.api.statement({ 
+      const response = await this.sendRequest({ 
         statement: 1, 
         description: 1, 
         limit: 50 
@@ -189,9 +242,9 @@ class DerivAPIService {
 
   subscribeToBalance(callback) {
     try {
-      const subscription = this.api.subscribe({ balance: 1 });
+      const req_id = ++this.requestId;
       
-      subscription.subscribe((response) => {
+      this.messageHandlers.set(req_id, (response) => {
         if (response.balance) {
           callback({
             balance: response.balance.balance,
@@ -200,7 +253,18 @@ class DerivAPIService {
         }
       });
 
-      return () => subscription.unsubscribe();
+      this.ws.send(JSON.stringify({ 
+        balance: 1, 
+        subscribe: 1,
+        req_id 
+      }));
+
+      return () => {
+        this.messageHandlers.delete(req_id);
+        this.ws.send(JSON.stringify({ 
+          forget: req_id 
+        }));
+      };
     } catch (error) {
       console.error('Balance subscription failed:', error);
       return () => {};
@@ -220,16 +284,16 @@ class DerivAPIService {
   }
 
   disconnect() {
-    if (this.connection) {
-      this.connection.close();
-      this.connection = null;
-      this.api = null;
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+      this.messageHandlers.clear();
       console.log('🔌 Disconnected from Deriv');
     }
   }
 
   isConnected() {
-    return this.connection?.readyState === WebSocket.OPEN;
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 }
 
