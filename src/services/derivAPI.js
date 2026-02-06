@@ -1,360 +1,236 @@
 import DerivAPI from '@deriv/deriv-api';
 
-// Synthetic indices symbols to filter for
-const SYNTHETIC_INDICES = [
-    'R_100', 'R_50', 'R_75', 'R_25', 'R_10',
-    'BOOM1000', 'BOOM500', 'BOOM300',
-    'CRASH1000', 'CRASH500', 'CRASH300',
-    '1HZ100V', '1HZ75V', '1HZ50V', '1HZ25V', '1HZ10V', // Volatility indices
-    'V75', 'V100', 'V50', 'V25', 'V10'
-];
-
-// DBot's official app_id
-const DBOT_APP_ID = 16929;
-
 class DerivAPIService {
-    constructor(appId) {
-        this.appId = appId;
-        this.connection = null;
-        this.api = null;
-        this.accountInfo = null;
-        this.subscriptions = new Map();
-    }
+  constructor(appId) {
+    this.appId = appId;
+    this.api = null;
+    this.connection = null;
+    this.accountInfo = null;
+  }
 
-    /**
-     * Connect to Deriv WebSocket API
-     * @returns {Promise<{success: boolean, message: string}>}
-     */
-    async connect() {
-        try {
-            if (this.api) {
-                return { success: true, message: 'Already connected' };
-            }
-
-            this.api = new DerivAPI({
-                app_id: this.appId,
-                endpoint: 'wss://ws.derivws.com/websockets/v3'
-            });
-
-            // Wait for connection to be established
-            await this.api.ping();
-
-            console.log('[DerivAPI] Connected successfully');
-            return { success: true, message: 'Connected to Deriv API' };
-        } catch (error) {
-            console.error('[DerivAPI] Connection failed:', error);
-            return {
-                success: false,
-                message: `Connection failed: ${error.message || 'Unknown error'}`
-            };
-        }
-    }
-
-    /**
-     * Authorize with API token
-     * @param {string} token - Deriv API token
-     * @returns {Promise<{success: boolean, data?: object, message?: string}>}
-     */
-    async authorize(token) {
-        try {
-            if (!this.api) {
-                throw new Error('Not connected. Call connect() first.');
-            }
-
-            const response = await this.api.authorize({ authorize: token });
-
-            if (response.error) {
-                throw new Error(response.error.message);
-            }
-
-            this.accountInfo = {
-                loginid: response.authorize.loginid,
-                currency: response.authorize.currency,
-                balance: response.authorize.balance,
-                email: response.authorize.email,
-                fullname: response.authorize.fullname,
-                is_virtual: response.authorize.is_virtual,
-                country: response.authorize.country
-            };
-
-            console.log('[DerivAPI] Authorized successfully:', this.accountInfo.loginid);
-            return { success: true, data: this.accountInfo };
-        } catch (error) {
-            console.error('[DerivAPI] Authorization failed:', error);
-            return {
-                success: false,
-                message: `Authorization failed: ${error.message || 'Invalid token'}`
-            };
-        }
-    }
-
-    /**
-     * Get current account balance
-     * @returns {Promise<{success: boolean, data?: object, message?: string}>}
-     */
-    async getBalance() {
-        try {
-            if (!this.api) {
-                throw new Error('Not connected. Call connect() first.');
-            }
-
-            const response = await this.api.balance();
-
-            if (response.error) {
-                throw new Error(response.error.message);
-            }
-
-            return {
-                success: true,
-                data: {
-                    balance: response.balance.balance,
-                    currency: response.balance.currency
-                }
-            };
-        } catch (error) {
-            console.error('[DerivAPI] Failed to get balance:', error);
-            return {
-                success: false,
-                message: `Failed to get balance: ${error.message}`
-            };
-        }
-    }
-
-    /**
-     * Get open positions filtered for synthetic indices
-     * @returns {Promise<{success: boolean, data?: array, message?: string}>}
-     */
-    async getOpenPositions() {
-        try {
-            if (!this.api) {
-                throw new Error('Not connected. Call connect() first.');
-            }
-
-            const response = await this.api.portfolio({ portfolio: 1 });
-
-            if (response.error) {
-                throw new Error(response.error.message);
-            }
-
-            const contracts = response.portfolio?.contracts || [];
-
-            // Filter for synthetic indices only
-            const filteredContracts = contracts
-                .filter(contract => this.isSyntheticIndex(contract.symbol))
-                .map(contract => ({
-                    contract_id: contract.contract_id,
-                    symbol: contract.symbol,
-                    contract_type: contract.contract_type,
-                    buy_price: contract.buy_price,
-                    profit: contract.profit,
-                    date_start: contract.date_start,
-                    longcode: contract.longcode,
-                    payout: contract.payout,
-                    expiry_time: contract.expiry_time
-                }));
-
-            return { success: true, data: filteredContracts };
-        } catch (error) {
-            console.error('[DerivAPI] Failed to get open positions:', error);
-            return {
-                success: false,
-                message: `Failed to get open positions: ${error.message}`
-            };
-        }
-    }
-
-    /**
-     * Get trade history filtered for synthetic indices
-     * @param {number} limit - Maximum number of transactions to retrieve
-     * @returns {Promise<{success: boolean, data?: array, message?: string}>}
-     */
-    async getTradeHistory(limit = 20) {
-        try {
-            if (!this.api) {
-                throw new Error('Not connected. Call connect() first.');
-            }
-
-            const response = await this.api.profitTable({
-                profit_table: 1,
-                description: 1,
-                limit: limit
-            });
-
-            if (response.error) {
-                throw new Error(response.error.message);
-            }
-
-            const transactions = response.profit_table?.transactions || [];
-
-            // Filter for synthetic indices only
-            const filteredTransactions = transactions
-                .filter(tx => this.isSyntheticIndex(tx.underlying_symbol || tx.shortcode?.split('_')[0]))
-                .map(tx => ({
-                    transaction_id: tx.transaction_id,
-                    symbol: tx.underlying_symbol || tx.shortcode?.split('_')[0],
-                    contract_type: tx.contract_type || tx.shortcode?.split('_')[1],
-                    buy_price: tx.buy_price,
-                    sell_price: tx.sell_price,
-                    profit: tx.sell_price - tx.buy_price,
-                    purchase_time: tx.purchase_time,
-                    sell_time: tx.sell_time,
-                    longcode: tx.longcode
-                }));
-
-            return { success: true, data: filteredTransactions };
-        } catch (error) {
-            console.error('[DerivAPI] Failed to get trade history:', error);
-            return {
-                success: false,
-                message: `Failed to get trade history: ${error.message}`
-            };
-        }
-    }
-
-    /**
-     * Get bot activity (transactions from DBot)
-     * @returns {Promise<{success: boolean, data?: array, message?: string}>}
-     */
-    async getBotActivity() {
-        try {
-            if (!this.api) {
-                throw new Error('Not connected. Call connect() first.');
-            }
-
-            const response = await this.api.statement({
-                statement: 1,
-                description: 1,
-                limit: 50
-            });
-
-            if (response.error) {
-                throw new Error(response.error.message);
-            }
-
-            const transactions = response.statement?.transactions || [];
-
-            // Filter for DBot transactions (app_id === 16929)
-            const botTransactions = transactions
-                .filter(tx => tx.app_id === DBOT_APP_ID)
-                .map(tx => ({
-                    transaction_id: tx.transaction_id,
-                    action_type: tx.action_type,
-                    amount: tx.amount,
-                    longcode: tx.longcode,
-                    transaction_time: tx.transaction_time,
-                    contract_id: tx.contract_id,
-                    balance_after: tx.balance_after,
-                    reference_id: tx.reference_id
-                }));
-
-            return { success: true, data: botTransactions };
-        } catch (error) {
-            console.error('[DerivAPI] Failed to get bot activity:', error);
-            return {
-                success: false,
-                message: `Failed to get bot activity: ${error.message}`
-            };
-        }
-    }
-
-    /**
-     * Subscribe to balance updates
-     * @param {function} callback - Function to call with balance updates
-     * @returns {function} Unsubscribe function
-     */
-    subscribeToBalance(callback) {
-        if (!this.api) {
-            console.error('[DerivAPI] Cannot subscribe: Not connected');
-            return () => { };
-        }
-
-        const subscriptionId = Date.now().toString();
-
-        const handleBalanceUpdate = async () => {
-            try {
-                const subscription = await this.api.subscribe({ balance: 1 });
-
-                subscription.onUpdate((data) => {
-                    if (data.balance) {
-                        callback({
-                            balance: data.balance.balance,
-                            currency: data.balance.currency
-                        });
-                    }
-                });
-
-                this.subscriptions.set(subscriptionId, subscription);
-            } catch (error) {
-                console.error('[DerivAPI] Balance subscription failed:', error);
-            }
+  async connect() {
+    try {
+      this.connection = new WebSocket(
+        `wss://ws.derivws.com/websockets/v3?app_id=${this.appId}`
+      );
+      
+      this.api = new DerivAPI({ connection: this.connection });
+      
+      return new Promise((resolve, reject) => {
+        this.connection.onopen = () => {
+          console.log('✅ Connected to Deriv WebSocket');
+          resolve({ success: true, data: true });
         };
-
-        handleBalanceUpdate();
-
-        // Return unsubscribe function
-        return () => {
-            const subscription = this.subscriptions.get(subscriptionId);
-            if (subscription && subscription.unsubscribe) {
-                subscription.unsubscribe();
-                this.subscriptions.delete(subscriptionId);
-                console.log('[DerivAPI] Unsubscribed from balance updates');
-            }
+        
+        this.connection.onerror = (error) => {
+          console.error('❌ WebSocket error:', error);
+          reject({ success: false, message: error.message });
         };
+        
+        this.connection.onclose = () => {
+          console.log('🔌 WebSocket closed');
+        };
+      });
+    } catch (error) {
+      console.error('Connection failed:', error);
+      return { success: false, message: error.message };
     }
+  }
 
-    /**
-     * Disconnect from the API
-     */
-    disconnect() {
-        try {
-            // Clean up all subscriptions
-            this.subscriptions.forEach((subscription, id) => {
-                if (subscription && subscription.unsubscribe) {
-                    subscription.unsubscribe();
-                }
-            });
-            this.subscriptions.clear();
+  async authorize(token) {
+    try {
+      const response = await this.api.authorize({ authorize: token });
+      
+      this.accountInfo = {
+        loginid: response.authorize.loginid,
+        currency: response.authorize.currency,
+        balance: response.authorize.balance,
+        email: response.authorize.email,
+        country: response.authorize.country
+      };
+      
+      console.log('✅ Authorized:', this.accountInfo.loginid);
+      return { success: true, data: this.accountInfo };
+    } catch (error) {
+      console.error('Authorization failed:', error);
+      return { success: false, message: 'Invalid API token' };
+    }
+  }
 
-            // Close the connection
-            if (this.api) {
-                this.api.disconnect();
-                this.api = null;
-            }
-
-            this.accountInfo = null;
-            console.log('[DerivAPI] Disconnected');
-        } catch (error) {
-            console.error('[DerivAPI] Error during disconnect:', error);
+  async getBalance() {
+    try {
+      const response = await this.api.balance();
+      return {
+        success: true,
+        data: {
+          balance: response.balance.balance,
+          currency: response.balance.currency
         }
+      };
+    } catch (error) {
+      console.error('Failed to fetch balance:', error);
+      return { success: false, message: error.message, data: null };
     }
+  }
 
-    /**
-     * Check if a symbol is a synthetic index
-     * @param {string} symbol - Trading symbol
-     * @returns {boolean}
-     */
-    isSyntheticIndex(symbol) {
-        if (!symbol) return false;
-        return SYNTHETIC_INDICES.some(
-            synth => symbol.toUpperCase().includes(synth.toUpperCase())
-        );
-    }
+  async getOpenPositions() {
+    try {
+      const response = await this.api.portfolio({ portfolio: 1 });
+      
+      if (!response.portfolio || !response.portfolio.contracts) {
+        return { success: true, data: [] };
+      }
 
-    /**
-     * Get current connection status
-     * @returns {boolean}
-     */
-    isConnected() {
-        return this.api !== null;
-    }
+      // Filter for synthetic indices only
+      const syntheticSymbols = ['R_10', 'R_25', 'R_50', 'R_75', 'R_100', 
+                                 'BOOM300', 'BOOM500', 'BOOM1000', 
+                                 'CRASH300', 'CRASH500', 'CRASH1000',
+                                 '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V'];
+      
+      const positions = response.portfolio.contracts
+        .filter(contract => syntheticSymbols.includes(contract.symbol))
+        .map(contract => ({
+          contract_id: contract.contract_id,
+          symbol: contract.symbol,
+          contract_type: contract.contract_type,
+          buy_price: contract.buy_price,
+          profit: contract.profit,
+          payout: contract.payout,
+          currency: contract.currency,
+          date_start: contract.date_start,
+          expiry_time: contract.expiry_time,
+          longcode: contract.longcode
+        }));
 
-    /**
-     * Get stored account info
-     * @returns {object|null}
-     */
-    getAccountInfo() {
-        return this.accountInfo;
+      return { success: true, data: positions };
+    } catch (error) {
+      console.error('Failed to fetch positions:', error);
+      return { success: false, message: error.message, data: [] };
     }
+  }
+
+  async getTradeHistory(limit = 20) {
+    try {
+      const response = await this.api.profitTable({ 
+        profit_table: 1, 
+        description: 1, 
+        limit: limit,
+        sort: 'DESC'
+      });
+
+      if (!response.profit_table || !response.profit_table.transactions) {
+        return { success: true, data: [] };
+      }
+
+      // Filter for synthetic indices
+      const syntheticSymbols = ['R_10', 'R_25', 'R_50', 'R_75', 'R_100', 
+                                 'BOOM300', 'BOOM500', 'BOOM1000', 
+                                 'CRASH300', 'CRASH500', 'CRASH1000',
+                                 '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V'];
+
+      const trades = response.profit_table.transactions
+        .filter(t => syntheticSymbols.some(sym => t.shortcode?.includes(sym)))
+        .map(trade => ({
+          transaction_id: trade.transaction_id,
+          contract_id: trade.contract_id,
+          symbol: this.extractSymbol(trade.shortcode),
+          contract_type: trade.contract_type,
+          buy_price: trade.buy_price,
+          sell_price: trade.sell_price,
+          profit: trade.sell_price - trade.buy_price,
+          purchase_time: trade.purchase_time * 1000, // Convert to ms
+          sell_time: trade.sell_time * 1000,
+          longcode: trade.longcode,
+          shortcode: trade.shortcode
+        }));
+
+      return { success: true, data: trades };
+    } catch (error) {
+      console.error('Failed to fetch trade history:', error);
+      return { success: false, message: error.message, data: [] };
+    }
+  }
+
+  async getBotActivity() {
+    try {
+      const response = await this.api.statement({ 
+        statement: 1, 
+        description: 1, 
+        limit: 50 
+      });
+
+      if (!response.statement || !response.statement.transactions) {
+        return { success: true, data: [] };
+      }
+
+      // Filter for DBot transactions (app_id 16929 or 19111)
+      const botAppIds = [16929, 19111]; // DBot app IDs
+      
+      const botTransactions = response.statement.transactions
+        .filter(t => botAppIds.includes(t.app_id))
+        .map(transaction => ({
+          transaction_id: transaction.transaction_id,
+          action_type: transaction.action_type,
+          amount: transaction.amount,
+          balance_after: transaction.balance_after,
+          contract_id: transaction.contract_id,
+          longcode: transaction.longcode,
+          shortcode: transaction.shortcode,
+          transaction_time: transaction.transaction_time * 1000,
+          app_id: transaction.app_id
+        }));
+
+      return { success: true, data: botTransactions };
+    } catch (error) {
+      console.error('Failed to fetch bot activity:', error);
+      return { success: false, message: error.message, data: [] };
+    }
+  }
+
+  subscribeToBalance(callback) {
+    try {
+      const subscription = this.api.subscribe({ balance: 1 });
+      
+      subscription.subscribe((response) => {
+        if (response.balance) {
+          callback({
+            balance: response.balance.balance,
+            currency: response.balance.currency
+          });
+        }
+      });
+
+      return () => subscription.unsubscribe();
+    } catch (error) {
+      console.error('Balance subscription failed:', error);
+      return () => {};
+    }
+  }
+
+  extractSymbol(shortcode) {
+    if (!shortcode) return 'UNKNOWN';
+    
+    const symbols = ['R_10', 'R_25', 'R_50', 'R_75', 'R_100', 
+                     'BOOM300', 'BOOM500', 'BOOM1000', 
+                     'CRASH300', 'CRASH500', 'CRASH1000',
+                     '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V'];
+    
+    const found = symbols.find(sym => shortcode.includes(sym));
+    return found || 'UNKNOWN';
+  }
+
+  disconnect() {
+    if (this.connection) {
+      this.connection.close();
+      this.connection = null;
+      this.api = null;
+      console.log('🔌 Disconnected from Deriv');
+    }
+  }
+
+  isConnected() {
+    return this.connection?.readyState === WebSocket.OPEN;
+  }
 }
 
 export default DerivAPIService;

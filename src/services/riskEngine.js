@@ -21,238 +21,264 @@ export const RiskType = {
 };
 
 class RiskEngine {
-    constructor() {
-        this.thresholds = {
-            maxDailyTrades: 50,
-            maxLossStreak: 5,
-            maxPositionPercent: 10, // % of balance
-            minTimeBetweenTrades: 10, // seconds
-            martingaleMultiplier: 1.8,
-            balanceDropPercent: 20, // % drop warning
-            botTradeInterval: 2, // seconds - suspicious if trades are this fast
-        };
+  constructor() {
+    this.thresholds = {
+      martingaleMultiplier: 1.8, // Stake increase threshold
+      martingaleOccurrences: 2,  // Min occurrences to flag
+      overtradingCount: 5,       // Trades in timeframe
+      overtradingWindow: 300000, // 5 minutes in ms
+      lossStreakMin: 3,          // Consecutive losses to flag
+      highRiskScore: 40,         // Below this is high risk
+      mediumRiskScore: 70        // Below this is medium risk
+    };
+  }
 
-        this.warnings = [];
-    }
-
-    setThresholds(newThresholds) {
-        this.thresholds = { ...this.thresholds, ...newThresholds };
-    }
-
-    analyzeTradeHistory(trades, currentBalance, initialBalance) {
-        this.warnings = [];
-
-        if (!trades || trades.length === 0) {
-            return { warnings: [], riskScore: 0 };
-        }
-
-        this.checkOvertrading(trades);
-        this.checkLossStreak(trades);
-        this.checkRapidTrading(trades);
-        this.checkMartingalePattern(trades);
-        this.checkBalanceDepletion(currentBalance, initialBalance);
-        this.checkBotActivity(trades);
-        this.checkUnusualHours(trades);
-
-        const riskScore = this.calculateOverallRiskScore();
-
-        return {
-            warnings: this.warnings,
-            riskScore,
-            riskLevel: this.getRiskLevel(riskScore),
-        };
-    }
-
-    checkOvertrading(trades) {
-        const today = new Date().toDateString();
-        const todayTrades = trades.filter(
-            (t) => new Date(t.purchase_time * 1000).toDateString() === today
-        );
-
-        if (todayTrades.length > this.thresholds.maxDailyTrades) {
-            this.warnings.push({
-                type: RiskType.OVERTRADING,
-                level: RiskLevel.HIGH,
-                message: `High trading frequency: ${todayTrades.length} trades today (threshold: ${this.thresholds.maxDailyTrades})`,
-                value: todayTrades.length,
-            });
-        }
-    }
-
-    checkLossStreak(trades) {
-        let currentStreak = 0;
-        let maxStreak = 0;
-
-        for (const trade of trades) {
-            if (trade.sell_price < trade.buy_price) {
-                currentStreak++;
-                maxStreak = Math.max(maxStreak, currentStreak);
-            } else {
-                currentStreak = 0;
-            }
-        }
-
-        if (maxStreak >= this.thresholds.maxLossStreak) {
-            this.warnings.push({
-                type: RiskType.HIGH_LOSS_STREAK,
-                level: maxStreak >= 8 ? RiskLevel.CRITICAL : RiskLevel.HIGH,
-                message: `Consecutive losses detected: ${maxStreak} trades in a row`,
-                value: maxStreak,
-            });
-        }
-    }
-
-    checkRapidTrading(trades) {
-        const sortedTrades = [...trades].sort((a, b) => a.purchase_time - b.purchase_time);
-        let rapidCount = 0;
-
-        for (let i = 1; i < sortedTrades.length; i++) {
-            const timeDiff = sortedTrades[i].purchase_time - sortedTrades[i - 1].purchase_time;
-            if (timeDiff < this.thresholds.minTimeBetweenTrades) {
-                rapidCount++;
-            }
-        }
-
-        if (rapidCount > 5) {
-            this.warnings.push({
-                type: RiskType.RAPID_TRADING,
-                level: RiskLevel.MEDIUM,
-                message: `Rapid trading detected: ${rapidCount} trades with less than ${this.thresholds.minTimeBetweenTrades}s intervals`,
-                value: rapidCount,
-            });
-        }
-    }
-
-    checkMartingalePattern(trades) {
-        const sortedTrades = [...trades].sort((a, b) => a.purchase_time - b.purchase_time);
-        let martingaleCount = 0;
-
-        for (let i = 1; i < sortedTrades.length; i++) {
-            const prevTrade = sortedTrades[i - 1];
-            const currTrade = sortedTrades[i];
-
-            // Check if previous was a loss and current stake is significantly higher
-            if (
-                prevTrade.sell_price < prevTrade.buy_price &&
-                currTrade.buy_price >= prevTrade.buy_price * this.thresholds.martingaleMultiplier
-            ) {
-                martingaleCount++;
-            }
-        }
-
-        if (martingaleCount >= 3) {
-            this.warnings.push({
-                type: RiskType.MARTINGALE_PATTERN,
-                level: RiskLevel.CRITICAL,
-                message: `Martingale pattern detected: ${martingaleCount} instances of doubled stakes after losses`,
-                value: martingaleCount,
-            });
-        }
-    }
-
-    checkBalanceDepletion(currentBalance, initialBalance) {
-        if (!initialBalance || initialBalance === 0) return;
-
-        const dropPercent = ((initialBalance - currentBalance) / initialBalance) * 100;
-
-        if (dropPercent >= this.thresholds.balanceDropPercent) {
-            this.warnings.push({
-                type: RiskType.BALANCE_DEPLETION,
-                level: dropPercent >= 50 ? RiskLevel.CRITICAL : RiskLevel.HIGH,
-                message: `Significant balance drop: ${dropPercent.toFixed(1)}% decrease from initial balance`,
-                value: dropPercent,
-            });
-        }
-    }
-
-    checkBotActivity(trades) {
-        const sortedTrades = [...trades].sort((a, b) => a.purchase_time - b.purchase_time);
-        let suspiciousIntervals = 0;
-
-        for (let i = 1; i < Math.min(sortedTrades.length, 20); i++) {
-            const timeDiff = sortedTrades[i].purchase_time - sortedTrades[i - 1].purchase_time;
-            if (timeDiff <= this.thresholds.botTradeInterval) {
-                suspiciousIntervals++;
-            }
-        }
-
-        if (suspiciousIntervals >= 5) {
-            this.warnings.push({
-                type: RiskType.BOT_ACTIVITY,
-                level: RiskLevel.MEDIUM,
-                message: `Potential bot activity: ${suspiciousIntervals} trades executed within ${this.thresholds.botTradeInterval}s intervals`,
-                value: suspiciousIntervals,
-                isBotLikely: true,
-            });
-        }
-    }
-
-    checkUnusualHours(trades) {
-        const unusualHourTrades = trades.filter((trade) => {
-            const hour = new Date(trade.purchase_time * 1000).getHours();
-            return hour >= 0 && hour < 6; // Between midnight and 6 AM
+  /**
+   * Detect Martingale strategy (stake doubling after losses)
+   */
+  detectMartingale(trades) {
+    if (!trades || trades.length < 3) return null;
+    
+    const recent = trades.slice(0, 10); // Check last 10 trades
+    let doublingPattern = 0;
+    let doublingInstances = [];
+    
+    for (let i = 1; i < recent.length; i++) {
+      const currentStake = recent[i].buy_price;
+      const previousStake = recent[i - 1].buy_price;
+      const previousProfit = recent[i - 1].profit;
+      
+      // Check if stake increased after a loss
+      if (previousProfit < 0 && currentStake >= previousStake * this.thresholds.martingaleMultiplier) {
+        doublingPattern++;
+        doublingInstances.push({
+          previousStake,
+          currentStake,
+          increase: ((currentStake / previousStake - 1) * 100).toFixed(1)
         });
-
-        if (unusualHourTrades.length >= 10) {
-            this.warnings.push({
-                type: RiskType.UNUSUAL_HOURS,
-                level: RiskLevel.LOW,
-                message: `Trading during unusual hours: ${unusualHourTrades.length} trades between 12 AM - 6 AM`,
-                value: unusualHourTrades.length,
-            });
-        }
+      }
     }
-
-    analyzeOpenPositions(positions, balance) {
-        const positionWarnings = [];
-
-        for (const position of positions) {
-            const positionPercent = (position.buy_price / balance) * 100;
-
-            if (positionPercent > this.thresholds.maxPositionPercent) {
-                positionWarnings.push({
-                    type: RiskType.LARGE_POSITION,
-                    level: positionPercent > 25 ? RiskLevel.CRITICAL : RiskLevel.HIGH,
-                    message: `Large position: ${positionPercent.toFixed(1)}% of balance on contract ${position.contract_id}`,
-                    value: positionPercent,
-                    contractId: position.contract_id,
-                });
-            }
-        }
-
-        return positionWarnings;
+    
+    if (doublingPattern >= this.thresholds.martingaleOccurrences) {
+      return {
+        severity: 'high',
+        type: 'martingale',
+        pattern: 'Martingale',
+        count: doublingPattern,
+        instances: doublingInstances,
+        message: `Stake doubling detected after ${doublingPattern} losses - Classic Martingale pattern`,
+        explanation: 'You increased your stake after losing. This is extremely risky and can wipe your account quickly.',
+        recommendation: 'Use fixed stakes or stop trading after 2-3 consecutive losses.'
+      };
     }
+    
+    return null;
+  }
 
-    calculateOverallRiskScore() {
-        let score = 0;
-
-        for (const warning of this.warnings) {
-            switch (warning.level) {
-                case RiskLevel.LOW:
-                    score += 5;
-                    break;
-                case RiskLevel.MEDIUM:
-                    score += 15;
-                    break;
-                case RiskLevel.HIGH:
-                    score += 30;
-                    break;
-                case RiskLevel.CRITICAL:
-                    score += 50;
-                    break;
-            }
-        }
-
-        return Math.min(score, 100);
+  /**
+   * Detect overtrading (too many trades in short time)
+   */
+  detectOvertrading(trades) {
+    if (!trades || trades.length === 0) return null;
+    
+    const now = Date.now();
+    const windowStart = now - this.thresholds.overtradingWindow;
+    
+    const recentTrades = trades.filter(t => t.purchase_time > windowStart);
+    
+    if (recentTrades.length >= this.thresholds.overtradingCount) {
+      return {
+        severity: 'medium',
+        type: 'overtrading',
+        count: recentTrades.length,
+        timeWindow: '5 minutes',
+        message: `${recentTrades.length} trades in 5 minutes - Possible emotional or revenge trading`,
+        explanation: 'Trading too frequently often indicates emotional decisions rather than strategic thinking.',
+        recommendation: 'Take a break. Set a minimum time between trades (at least 5-10 minutes).'
+      };
     }
+    
+    return null;
+  }
 
-    getRiskLevel(score) {
-        if (score >= 70) return RiskLevel.CRITICAL;
-        if (score >= 40) return RiskLevel.HIGH;
-        if (score >= 20) return RiskLevel.MEDIUM;
-        return RiskLevel.LOW;
+  /**
+   * Detect consecutive loss streaks
+   */
+  detectLossStreak(trades) {
+    if (!trades || trades.length === 0) return null;
+    
+    let streak = 0;
+    let totalLoss = 0;
+    
+    for (let trade of trades) {
+      if (trade.profit < 0) {
+        streak++;
+        totalLoss += Math.abs(trade.profit);
+      } else {
+        break; // Stop at first win
+      }
     }
+    
+    if (streak >= this.thresholds.lossStreakMin) {
+      return {
+        severity: streak >= 5 ? 'high' : 'medium',
+        type: 'loss_streak',
+        streak: streak,
+        totalLoss: totalLoss.toFixed(2),
+        message: `${streak} consecutive losses totaling $${totalLoss.toFixed(2)}`,
+        explanation: 'Losing streaks are normal, but continuing to trade during one often makes it worse.',
+        recommendation: 'Stop trading for at least 1 hour. Review your strategy before continuing.'
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * Detect risky bot strategies
+   */
+  detectBotRisk(botTransactions) {
+    if (!botTransactions || botTransactions.length === 0) return null;
+    
+    const riskyPatterns = [
+      { keyword: 'martingale', severity: 'high', name: 'Martingale' },
+      { keyword: "d'alembert", severity: 'high', name: "D'Alembert" },
+      { keyword: 'anti-martingale', severity: 'medium', name: 'Anti-Martingale' },
+      { keyword: 'grid', severity: 'medium', name: 'Grid Trading' }
+    ];
+    
+    for (let pattern of riskyPatterns) {
+      const detected = botTransactions.some(t => 
+        t.longcode?.toLowerCase().includes(pattern.keyword) ||
+        t.shortcode?.toLowerCase().includes(pattern.keyword)
+      );
+      
+      if (detected) {
+        return {
+          severity: pattern.severity,
+          type: 'bot_risk',
+          botType: `${pattern.name} DBot`,
+          transactionCount: botTransactions.length,
+          message: `Automated ${pattern.name} strategy detected - High account risk`,
+          explanation: `${pattern.name} strategies automatically increase stakes after losses. This can drain your account in minutes during volatility.`,
+          recommendation: 'Stop the bot immediately. Use fixed-stake strategies or manual trading with strict limits.'
+        };
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Detect position sizing issues
+   */
+  detectPositionSizing(trades, accountBalance) {
+    if (!trades || trades.length === 0 || !accountBalance) return null;
+    
+    const recent = trades.slice(0, 5);
+    const avgStake = recent.reduce((sum, t) => sum + t.buy_price, 0) / recent.length;
+    const stakePercentage = (avgStake / accountBalance) * 100;
+    
+    if (stakePercentage > 5) {
+      return {
+        severity: stakePercentage > 10 ? 'high' : 'medium',
+        type: 'position_sizing',
+        stakePercentage: stakePercentage.toFixed(1),
+        avgStake: avgStake.toFixed(2),
+        message: `Average stake is ${stakePercentage.toFixed(1)}% of account balance - Too high`,
+        explanation: 'Risk management experts recommend never risking more than 1-2% per trade.',
+        recommendation: `Reduce your stake to $${(accountBalance * 0.02).toFixed(2)} or less per trade.`
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * Calculate overall risk score (0-100)
+   */
+  calculateRiskScore(trades, botActivity, accountBalance) {
+    let score = 100;
+    
+    const martingale = this.detectMartingale(trades);
+    const overtrading = this.detectOvertrading(trades);
+    const lossStreak = this.detectLossStreak(trades);
+    const botRisk = this.detectBotRisk(botActivity);
+    const positionSizing = this.detectPositionSizing(trades, accountBalance);
+    
+    // Deduct points for each risk
+    if (martingale) score -= 40;
+    if (overtrading) score -= 20;
+    if (lossStreak) {
+      score -= lossStreak.severity === 'high' ? 25 : 15;
+    }
+    if (botRisk) score -= 30;
+    if (positionSizing) {
+      score -= positionSizing.severity === 'high' ? 25 : 15;
+    }
+    
+    return Math.max(0, score);
+  }
+
+  /**
+   * Get all detected risks
+   */
+  getAllRisks(trades, botActivity, accountBalance) {
+    const risks = [];
+    
+    const martingale = this.detectMartingale(trades);
+    if (martingale) risks.push(martingale);
+    
+    const overtrading = this.detectOvertrading(trades);
+    if (overtrading) risks.push(overtrading);
+    
+    const lossStreak = this.detectLossStreak(trades);
+    if (lossStreak) risks.push(lossStreak);
+    
+    const botRisk = this.detectBotRisk(botActivity);
+    if (botRisk) risks.push(botRisk);
+    
+    const positionSizing = this.detectPositionSizing(trades, accountBalance);
+    if (positionSizing) risks.push(positionSizing);
+    
+    return risks;
+  }
+
+  /**
+   * Get risk level label
+   */
+  getRiskLevel(score) {
+    if (score >= this.thresholds.mediumRiskScore) return 'low';
+    if (score >= this.thresholds.highRiskScore) return 'medium';
+    return 'high';
+  }
+
+  /**
+   * Get risk color for UI
+   */
+  getRiskColor(score) {
+    if (score >= this.thresholds.mediumRiskScore) return 'green';
+    if (score >= this.thresholds.highRiskScore) return 'yellow';
+    return 'red';
+  }
+
+  /**
+   * Static method to analyze all risks at once
+   * This is what the React hook calls
+   */
+  static analyzeRisks({ openTrades, tradeHistory, botActivity, balance }) {
+    const engine = new RiskEngine();
+    
+    const risks = engine.getAllRisks(tradeHistory, botActivity, balance);
+    const score = engine.calculateRiskScore(tradeHistory, botActivity, balance);
+    
+    return {
+      score,
+      risks,
+      level: engine.getRiskLevel(score),
+      color: engine.getRiskColor(score)
+    };
+  }
 }
 
-export const riskEngine = new RiskEngine();
-export default riskEngine;
+export default RiskEngine;
