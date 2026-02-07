@@ -164,6 +164,32 @@ function App() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6 space-y-6">
+        {/* Debug Section - Verify Real Data */}
+        <div className="bg-slate-800/50 rounded-lg p-4 border border-cyan-500/30">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></div>
+            <span className="text-cyan-400 text-xs font-semibold uppercase tracking-wide">Debug Info - Live API Data</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div>
+              <span className="text-slate-500">Account Login ID:</span>
+              <span className="ml-2 text-white font-mono">{account.loginid || 'N/A'}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Balance:</span>
+              <span className="ml-2 text-white font-mono">{account.balance} {account.currency}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Trade History Count:</span>
+              <span className="ml-2 text-white font-mono">{tradeHistory.length}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Bot Activity Count:</span>
+              <span className="ml-2 text-white font-mono">{botActivity.length}</span>
+            </div>
+          </div>
+        </div>
+
         {/* Stat Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Balance Card */}
